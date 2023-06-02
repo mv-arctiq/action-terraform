@@ -1,0 +1,118 @@
+name: Terraform plan
+description: Execute terraform plan in parrallel based on dir provided
+
+inputs:
+  directory:
+    description: "Directoy on which to perfom terraform plan"
+    required: yes
+  pr_comment:
+    description: "Set to 'true' to store 'terraform fmt' error logs in PR comment."
+    required: false
+  workspace:
+    description: "Specify terraform workspace used for terraform plan"
+    required: false
+  artifact:
+    description: "Set to 'true' to save plan output in an artifact using the '-out' option"
+    required: false
+  output_limit:
+    description: "Size limit of the tfplan output. Decrease the maximum limit if you execute terraform in parallel"
+    required: false
+
+
+runs:
+  using: "composite"
+  steps:
+    - name: Set artifact filename
+      run: |
+        if [[ "${{ inputs.directory }}" != "" ]]; then
+          artifact_filename=$(sed 's~/~.~g' <<< "${{ inputs.directory }}.tfplan")
+          artifact_filepath="${{ github.workspace }}/${{ inputs.directory }}/${artifact_filename}"
+        else
+          artifact_filename="tfplan"
+          artifact_filepath="${{ github.workspace }}/${artifact_filename}"
+        fi
+
+        echo "name=${artifact_filename}" >> $GITHUB_OUTPUT
+        echo "path=${artifact_filepath}" >> $GITHUB_OUTPUT
+      shell: bash
+      id: artifact
+      if: inputs.artifact == 'true'
+
+    - name: Run terraform plan
+      run: |
+        if [[ "${{ inputs.artifact }}" == 'true' ]]; then
+          terraform plan -out ${{ steps.artifact.outputs.path }} 2>&1
+        else
+          terraform plan
+        fi
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      id: plan 
+      env:
+        TF_WORKSPACE: ${{ inputs.workspace }} 
+      continue-on-error: true
+
+    - name: Upload artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: ${{ steps.artifact.outputs.name }}
+        path: ${{ steps.artifact.outputs.path }}
+        if-no-files-found: error
+      if: |
+        inputs.artifact == 'true'
+        && steps.plan.outcome == 'success'
+
+    - name: Store logs to a file
+      run: |
+        if [[ "${{ inputs.directory }}" != '' ]];then
+          filepath=${{ github.workspace }}/${{ inputs.directory }}/tf_plan_output.md
+        else
+          filepath=${{ github.workspace }}/tf_plan_output.md
+        fi
+
+        # Unfortunately 'END_HELP' statement does not support tab in if statement..
+        if [[ ${{ steps.plan.outcome }} == 'success' ]]; then
+        cat > $filepath<<'END_HELP'
+        ${{ steps.plan.outputs.stdout }}
+        END_HELP
+        else
+        cat > $filepath<<'END_HELP'
+        ${{ steps.plan.outputs.stderr }}
+        END_HELP
+        fi
+
+        echo "path=${filepath}" >> $GITHUB_OUTPUT
+      if: |
+        github.event_name == 'pull_request'
+        && inputs.pr_comment == 'true'
+      shell: bash
+      id: logs
+
+    - name: Generate PR comment
+      run: PR_comment_generator.sh plan "${{ steps.plan.outcome }}" "${{ inputs.directory }}" "${{ steps.logs.outputs.path }}" "${{ inputs.output_limit }}"
+      if: steps.logs.conclusion != 'skipped'
+      shell: bash
+      id: comment
+
+    - name: Remove old comment if exists (only for non-matrix job)
+      uses: marocchino/sticky-pull-request-comment@v2.6.2
+      if: |
+        inputs.directory == ''
+        && github.event_name == 'pull_request'
+        && inputs.pr_comment == 'true'
+      with:
+        delete: true
+        header: plan
+
+    - name: Post plan output to github PR comment
+      uses: marocchino/sticky-pull-request-comment@v2.6.2
+      if: steps.comment.outcome == 'success'
+      with:
+        append: true
+        header: "${{ inputs.directory || 'plan' }}" 
+        path: "${{ steps.comment.outputs.filepath }}"
+
+    - name: Check for plan failure and set action status in consequence.
+      run: exit 1
+      if: steps.plan.outcome == 'failure'
+      shell: bash

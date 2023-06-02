@@ -1,0 +1,107 @@
+name: 'Terraform'
+description: 'Flexible action that acts like a wrapper to play with various terraform sub-actions'
+
+inputs:
+  artifact_workflow:
+    description: "Set to 'true' to save plan output in an artifact using the '-out' option with terraform apply"
+    required: false
+    default: true
+  directory:
+    description: "Provide a directory in your repository where terraform steps will be perfomed. If not specified, root directory of the repository will be used"
+    required: false
+  workspace:
+    description: "Specify terraform workspace used for terraform plan"
+    required: false
+  tf_version:
+    description: "Provide a custom version of terraform"
+    required: true
+  tf_init:
+    description: "Execute terraform init"
+    required: false
+    default: false
+  tf_init_pr_comment:
+    description: "Set to 'true' to store 'terraform init' error logs in PR comment."
+    required: false
+    default: true
+  tf_lint:
+    description: "Execute terraform lint steps"
+    required: false
+    default: false
+  tf_lint_pr_comment:
+    description: "Set to 'true' to store 'terraform fmt' error logs in PR comment."
+    required: false
+    default: true
+  tf_lint_fmt:
+    description: "Set to 'true' to execute 'terraform fmt'."
+    required: false
+    default: true
+  tf_lint_validate:
+    description: "Set to 'true' to execute 'terraform validate'."
+    required: false
+    default: true
+  tf_plan:
+    description: "Execute terraform plan step"
+    required: false
+    default: false
+  tf_plan_pr_comment:
+    description: "Set to 'true' to store 'terraform plan' error logs in PR comment."
+    required: false
+    default: true
+  tf_plan_output_limit:
+    description: "Size limit of the tfplan output. Decrease the maximum limit if you execute terraform in parallel"
+    required: false
+    default: 65000
+  tf_apply:
+    description: "Execute terraform apply step"
+    required: false
+    default: false
+
+runs:
+  using: "composite"
+  steps:
+    - uses: hashicorp/setup-terraform@v2
+      with:
+        terraform_version: "${{ inputs.tf_version }}"
+
+    - uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        header: "${{ inputs.directory }}"
+        delete: true
+      if: |
+        github.event_name == 'pull_request'
+        && inputs.directory != ''
+
+    # Add scripts/ to $PATH (https://docs.github.com/en/actions/creating-actions/creating-a-composite-action#creating-an-action-metadata-file)
+    - name: Setup necessary scripts
+      run: echo "${{ github.action_path }}/scripts" >> $GITHUB_PATH
+      shell: bash
+      if: github.event_name == 'pull_request'
+
+    - uses: ArctiqTeam/action-terraform/modules/init@main
+      with:
+        directory: "${{ inputs.directory }}"
+        pr_comment: "${{ inputs.tf_init_pr_comment }}"
+      if: "${{ inputs.tf_init == 'true' }}"
+
+    - uses: ArctiqTeam/action-terraform/modules/lint@main
+      with:
+        directory: "${{ inputs.directory }}"
+        pr_comment: "${{ inputs.tf_lint_pr_comment }}"
+        fmt: "${{ inputs.tf_lint_fmt }}"
+        validate: "${{ inputs.tf_lint_validate }}"
+      if: "${{ inputs.tf_lint == 'true' }}"
+
+    - uses: ArctiqTeam/action-terraform/modules/plan@main
+      with:
+        directory: "${{ inputs.directory }}"
+        pr_comment: "${{ inputs.tf_plan_pr_comment }}"
+        artifact: "${{ inputs.artifact_workflow }}"
+        output_limit: "${{ inputs.tf_plan_output_limit }}"
+      if: "${{ inputs.tf_plan == 'true' }}"
+
+    - uses: ArctiqTeam/action-terraform/modules/apply@main
+      with:
+        directory: "${{ inputs.directory }}"
+        workspace: "${{ inputs.workspace }}"
+        artifact: "${{ inputs.artifact_workflow }}"
+      if: "${{ inputs.tf_apply == 'true' }}"

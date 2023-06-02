@@ -1,0 +1,69 @@
+name: Terraform init
+description: Execute terraform init, allow auto PR comment and custom directory.
+
+inputs:
+  directory:
+    description: "Specified directory in which 'terraform init' will be executed"
+    required: false
+  pr_comment:
+    description: "Set to 'true' to store 'terraform init' error logs in PR comment."
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+      - name: Run terraform init
+        run: terraform init
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+        id: init
+        continue-on-error: true
+
+      - name: Store error log to a file
+        run: |
+          if [[ "${{ inputs.directory }}" != '' ]];then
+            filepath=${{ github.workspace }}/${{ inputs.directory }}/tf_init_output.md
+          else
+            filepath=${{ github.workspace }}/tf_init_output.md
+          fi
+
+          cat > $filepath<<'END_HELP'
+          ${{ steps.init.outputs.stderr }}
+          END_HELP
+
+          echo "path=${filepath}" >> $GITHUB_OUTPUT
+        if: |
+          steps.init.outputs.exitcode != 0
+          && github.event_name == 'pull_request'
+          && inputs.pr_comment == 'true'
+        shell: bash
+        id: error_logs
+
+      - name: Generate PR comment
+        run: PR_comment_generator.sh init "${{ steps.init.outcome }}" "${{ inputs.directory }}" "${{ steps.error_logs.outputs.path }}"
+        if: steps.error_logs.outcome == 'success'
+        shell: bash
+        id: comment
+
+      - name: Remove old comment if exists (only for non-matrix job)
+        uses: marocchino/sticky-pull-request-comment@v2.6.2
+        if: |
+          github.event_name == 'pull_request'
+          && inputs.directory == ''
+          && inputs.pr_comment == 'true'
+        with:
+          delete: true
+          header: init
+
+      - name: Post init output to github PR comment
+        uses: marocchino/sticky-pull-request-comment@v2.6.2
+        if: steps.comment.outcome == 'success'
+        with:
+          append: true
+          header: "${{ inputs.directory || 'init' }}"
+          path: "${{ steps.comment.outputs.filepath }}"
+
+      - name: Check for init failure and set action status in consequence.
+        run: exit 1
+        if: steps.init.outcome != 'success'
+        shell: bash

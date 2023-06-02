@@ -1,0 +1,141 @@
+name: Terraform lint
+description: Execute terraform linting steps, allow auto PR comment and custom directory.
+
+inputs:
+  directory:
+    description: "Directory in which terraform lint steps will be executed"
+    required: false
+  pr_comment:
+    description: "Set to 'true' to store 'terraform fmt' error logs in PR comment."
+    required: false
+  fmt:
+    description: "Set to 'true' to execute 'terraform fmt'."
+    required: false
+  validate:
+    description: "Set to 'true' to execute 'terraform validate'."
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+      ################
+      # TERRAFORM FMT
+      ################
+      # continue-on-error is required when a user wants to perform multiple
+      # linting tasks.
+      - name: Run terraform fmt
+        run: terraform fmt -check -diff
+        if: inputs.fmt == 'true'
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+        id: fmt
+        continue-on-error: true
+
+      - name: Store error log to a file
+        run: |
+          if [[ "${{ inputs.directory }}" != '' ]];then
+            filepath=${{ github.workspace }}/${{ inputs.directory }}/tf_fmt_output.md
+          else
+            filepath=${{ github.workspace }}/tf_fmt_output.md
+          fi
+
+          cat > $filepath<<'END_HELP'
+          ${{ steps.fmt.outputs.stdout }}
+          END_HELP
+
+          echo "path=${filepath}" >> $GITHUB_OUTPUT
+        if: |
+          steps.fmt.outputs.exitcode != 0
+          && github.event_name == 'pull_request'
+          && inputs.pr_comment == 'true'
+        shell: bash
+        id: fmt_error_logs
+
+      - name: Generate fmt PR comment
+        run: PR_comment_generator.sh fmt "${{ steps.fmt.outcome }}" "${{ inputs.directory }}" "${{ steps.fmt_error_logs.outputs.path }}"
+        if: steps.fmt_error_logs.outcome == 'success'
+        shell: bash
+        id: fmt_comment
+
+      - name: Remove old fmt comment if exists (only for non-matrix job)
+        uses: marocchino/sticky-pull-request-comment@v2.6.2
+        if: |
+          github.event_name == 'pull_request'
+          && inputs.directory == ''
+          && inputs.pr_comment == 'true'
+        with:
+          delete: true
+          header: fmt
+
+      - name: Post fmt output to github PR fmt comment
+        uses: marocchino/sticky-pull-request-comment@v2.6.2
+        if: steps.fmt_comment.outcome == 'success' 
+        with:
+          append: true
+          header: "${{ inputs.directory || 'fmt' }}"
+          path: "${{ steps.fmt_comment.outputs.filepath }}"
+
+      ####################
+      # TERRAFORM VALIDATE
+      ####################
+      - name: Run terraform validate
+        run: terraform validate
+        if: inputs.validate == 'true'
+        shell: bash
+        working-directory: ${{ inputs.directory }}
+        id: validate
+        continue-on-error: true
+
+      - name: Store error log to a file
+        run: |
+          if [[ "${{ inputs.directory }}" != '' ]];then
+            filepath=${{ github.workspace }}/${{ inputs.directory }}/tf_validate_output.md
+          else
+            filepath=${{ github.workspace }}/tf_validate_output.md
+          fi
+
+          cat > $filepath<<'END_HELP'
+          ${{ steps.validate.outputs.stderr }}
+          END_HELP
+
+          echo "path=${filepath}" >> $GITHUB_OUTPUT
+        if: |
+          steps.validate.outputs.exitcode != 0
+          && github.event_name == 'pull_request'
+          && inputs.pr_comment == 'true'
+        shell: bash
+        id: validate_error_logs
+
+      - name: Generate validate PR comment
+        run: PR_comment_generator.sh validate "${{ steps.validate.outcome}}" "${{ inputs.directory }}" "${{ steps.validate_error_logs.outputs.path }}"
+        if: steps.validate_error_logs.outcome == 'success'
+        shell: bash
+        id: validate_comment
+
+      - name: Remove old validate comment if exists (only for non-matrix job)
+        uses: marocchino/sticky-pull-request-comment@v2.6.2
+        if: |
+          github.event_name == 'pull_request'
+          && inputs.directory == ''
+          && inputs.pr_comment == 'true'
+        with:
+          delete: true
+          header: validate
+
+      - name: Post valide output to github PR comment
+        uses: marocchino/sticky-pull-request-comment@v2.6.2
+        if: steps.validate_comment.outcome == 'success' 
+        with:
+          append: true
+          header: "${{ inputs.directory || 'validate' }}"
+          path: "${{ steps.validate_comment.outputs.filepath }}"
+          
+      #####################
+      # CHECK ACTION STATUS
+      #####################
+      - name: Check for lint failure(s) and set action status in consequence.
+        run: exit 1
+        if: |
+          steps.fmt.outcome == 'failure' 
+          || steps.validate.outcome == 'failure'
+        shell: bash

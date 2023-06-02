@@ -1,0 +1,58 @@
+name: Terraform apply
+description: Execute terraform apply in parrallel based on dir provided
+
+inputs:
+  directory:
+    description: "Directoy on which to perfom terraform plan"
+    required: yes
+  workspace:
+    description: "Specify terraform workspace used for terraform plan"
+    required: false
+  artifact:
+    description: "Set to 'true' to consume plan artifact generated in a previous job"
+    required: false
+
+runs:
+  using: "composite"
+  steps:
+    - name: Recreate artifact filename
+      run: |
+        if [[ "${{ inputs.directory }}" != "" ]]; then
+          artifact_filename=$(sed 's~/~.~g' <<< "${{ inputs.directory }}.tfplan")
+        else
+          artifact_filename="tfplan"
+        fi
+
+        echo "name=${artifact_filename}" >> $GITHUB_OUTPUT
+      shell: bash
+      id: artifact_file
+      if: inputs.artifact == 'true'
+
+    - name: Download artifact from build job
+      uses: actions/download-artifact@v3
+      with:
+        name: ${{ steps.artifact_file.outputs.name }}
+        path: ${{ inputs.directory }}
+      if: inputs.artifact == 'true'
+
+    - name: Run terraform show (artifact workflow)
+      shell: bash
+      run: terraform show '${{ steps.artifact_file.outputs.name }}' -no-color
+      working-directory: ${{ inputs.directory }}
+      if: inputs.artifact == 'true'
+
+    - name: Terraform apply (artifact workflow)
+      run: terraform apply -auto-approve
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        TF_WORKSPACE: ${{ inputs.workspace }} 
+      if: inputs.artifact == 'true'
+
+    - name: Terraform apply (default workflow)
+      run: terraform apply ${{ inputs.tfplan }} -auto-approve
+      shell: bash
+      working-directory: ${{ inputs.directory }}
+      env:
+        TF_WORKSPACE: ${{ inputs.workspace }} 
+      if: inputs.artifact != 'true'
